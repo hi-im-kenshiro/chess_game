@@ -2,6 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const chessboard = document.getElementById('chessboard');
     const statusDisplay = document.getElementById('status');
     const resetButton = document.getElementById('reset');
+    const moveHistoryDisplay = document.getElementById('move-history');
     
     let board = [];
     let selectedPiece = null;
@@ -40,14 +41,39 @@ document.addEventListener('DOMContentLoaded', () => {
         moveHistory = [];
         renderBoard();
         updateStatus();
+        updateMoveHistory();
     }
     
     // Render the chess board
     function renderBoard() {
         chessboard.innerHTML = '';
         
+        // Highlight king if in check
+        if (inCheck) {
+            const king = currentPlayer === 'white' ? 'K' : 'k';
+            for (let row = 0; row < 8; row++) {
+                for (let col = 0; col < 8; col++) {
+                    if (board[row][col] === king) {
+                        const kingSquare = document.createElement('div');
+                        kingSquare.className = `square ${(row + col) % 2 === 0 ? 'light' : 'dark'} check-highlight`;
+                        kingSquare.dataset.row = row;
+                        kingSquare.dataset.col = col;
+                        kingSquare.textContent = getPieceSymbol(king);
+                        kingSquare.style.color = king === 'K' ? 'white' : 'black';
+                        chessboard.appendChild(kingSquare);
+                        continue;
+                    }
+                }
+            }
+        }
+        
         for (let row = 0; row < 8; row++) {
             for (let col = 0; col < 8; col++) {
+                // Skip if we already created the king square (in check)
+                if (inCheck && board[row][col] === (currentPlayer === 'white' ? 'K' : 'k')) {
+                    continue;
+                }
+                
                 const square = document.createElement('div');
                 square.className = `square ${(row + col) % 2 === 0 ? 'light' : 'dark'}`;
                 square.dataset.row = row;
@@ -57,11 +83,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (piece) {
                     square.textContent = getPieceSymbol(piece);
                     square.style.color = piece === piece.toLowerCase() ? 'black' : 'white';
-                }
-                
-                // Highlight en passant target square
-                if (enPassantTarget && enPassantTarget.row === row && enPassantTarget.col === col) {
-                    square.classList.add('en-passant');
                 }
                 
                 square.addEventListener('click', () => handleSquareClick(row, col));
@@ -91,6 +112,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 selectedPiece = { row, col };
                 highlightValidMoves(row, col);
                 updateBoardDisplay();
+                
+                if (inCheck) {
+                    statusDisplay.textContent = `${currentPlayer.charAt(0).toUpperCase() + currentPlayer.slice(1)}'s turn - You're in check!`;
+                    statusDisplay.className = 'check-warning';
+                }
             }
         } 
         // If a piece is already selected
@@ -100,6 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 selectedPiece = null;
                 clearHighlights();
                 updateBoardDisplay();
+                updateStatus();
                 return;
             }
             
@@ -112,17 +139,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             
-            // Check if the move is valid
-            if (isValidMove(selectedPiece.row, selectedPiece.col, row, col)) {
-                const moveSuccess = makeMove(selectedPiece.row, selectedPiece.col, row, col);
-                if (moveSuccess) {
-                    selectedPiece = null;
-                    clearHighlights();
-                    if (gameStatus === 'ongoing') {
-                        switchPlayer();
-                        inCheck = isKingInCheck();
-                        updateStatus();
-                    }
+            // Check if the move is valid and doesn't leave king in check
+            if (isValidMove(selectedPiece.row, selectedPiece.col, row, col) && 
+                !wouldLeaveKingInCheck(selectedPiece.row, selectedPiece.col, row, col)) {
+                makeMove(selectedPiece.row, selectedPiece.col, row, col);
+                selectedPiece = null;
+                clearHighlights();
+                if (gameStatus === 'ongoing') {
+                    switchPlayer();
+                    inCheck = isKingInCheck();
+                    updateStatus();
                 }
             }
         }
@@ -353,7 +379,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     // Make a move on the board
-    function makeMove(fromRow, fromCol, toRow, toCol) {
+    async function makeMove(fromRow, fromCol, toRow, toCol) {
         const piece = board[fromRow][fromCol];
         const isPawn = piece.toLowerCase() === 'p';
         const isKing = piece.toLowerCase() === 'k';
@@ -369,40 +395,6 @@ document.addEventListener('DOMContentLoaded', () => {
             return true;
         }
 
-        // Make a copy of the board for validation
-        const tempBoard = JSON.parse(JSON.stringify(board));
-        
-        // Make the move on the temporary board
-        tempBoard[toRow][toCol] = tempBoard[fromRow][fromCol];
-        tempBoard[fromRow][fromCol] = '';
-        
-        // Handle en passant capture
-        if (isPawn && fromCol !== toCol && tempBoard[toRow][toCol] === '') {
-            tempBoard[fromRow][toCol] = '';
-        }
-        
-        // Handle castling
-        if (isKing && Math.abs(fromCol - toCol) === 2) {
-            if (toCol > fromCol) { // Kingside
-                tempBoard[toRow][toCol-1] = tempBoard[toRow][7];
-                tempBoard[toRow][7] = '';
-            } else { // Queenside
-                tempBoard[toRow][toCol+1] = tempBoard[toRow][0];
-                tempBoard[toRow][0] = '';
-            }
-        }
-        
-        // Check if this move would leave the current player in check
-        const originalBoard = board;
-        board = tempBoard;
-        const wouldBeInCheck = isKingInCheck();
-        board = originalBoard;
-        
-        if (wouldBeInCheck) {
-            statusDisplay.textContent = "Invalid move - you can't put yourself in check!";
-            return false;
-        }
-
         // Execute the actual move
         const moveDetails = {
             from: { row: fromRow, col: fromCol },
@@ -416,7 +408,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Handle pawn promotion
         if (isPawn && (toRow === 0 || toRow === 7)) {
-            const promotionPiece = promptPromotion();
+            const promotionPiece = await promptPromotion();
             if (promotionPiece) {
                 board[toRow][toCol] = currentPlayer === 'white' ? promotionPiece.toUpperCase() : promotionPiece.toLowerCase();
                 moveDetails.promotion = true;
@@ -474,6 +466,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Add move to history
         moveHistory.push(moveDetails);
+        updateMoveHistory();
         
         renderBoard();
         
@@ -495,19 +488,70 @@ document.addEventListener('DOMContentLoaded', () => {
         return true;
     }
     
+    // Update move history display
+    function updateMoveHistory() {
+        if (!moveHistoryDisplay) return;
+        
+        moveHistoryDisplay.innerHTML = '<h3>Move History</h3>';
+        const ol = document.createElement('ol');
+        ol.style.maxHeight = '200px';
+        ol.style.overflowY = 'auto';
+        
+        moveHistory.forEach((move, index) => {
+            const li = document.createElement('li');
+            let moveText = `${index + 1}. ${move.piece} from ${String.fromCharCode(97 + move.from.col)}${8 - move.from.row} to ${String.fromCharCode(97 + move.to.col)}${8 - move.to.row}`;
+            
+            if (move.captured) {
+                moveText += ` (captured ${move.captured})`;
+            }
+            if (move.enPassant) {
+                moveText += ' (en passant)';
+            }
+            if (move.castling) {
+                moveText += ' (castling)';
+            }
+            if (move.promotion) {
+                moveText += ` (promoted to ${move.promotedTo})`;
+            }
+            
+            li.textContent = moveText;
+            ol.appendChild(li);
+        });
+        
+        moveHistoryDisplay.appendChild(ol);
+    }
+    
     // Prompt for pawn promotion choice
     function promptPromotion() {
-        // In a real implementation, you'd show a modal or UI element
-        // For simplicity, we'll use a prompt here
-        const validPieces = ['q', 'r', 'b', 'n'];
-        let choice = '';
-        
-        while (!validPieces.includes(choice)) {
-            choice = prompt('Promote pawn to (Q, R, B, N):', 'Q').toLowerCase();
-            if (choice === null) return null; // User canceled
-        }
-        
-        return choice;
+        return new Promise(resolve => {
+            const promotionModal = document.createElement('div');
+            promotionModal.className = 'promotion-modal';
+            promotionModal.innerHTML = `
+                <div>Promote pawn to:</div>
+                <div class="promotion-options">
+                    <div class="promotion-option" data-piece="q">♕</div>
+                    <div class="promotion-option" data-piece="r">♖</div>
+                    <div class="promotion-option" data-piece="b">♗</div>
+                    <div class="promotion-option" data-piece="n">♘</div>
+                </div>
+            `;
+            
+            const overlay = document.createElement('div');
+            overlay.className = 'modal-overlay';
+            
+            document.body.appendChild(overlay);
+            document.body.appendChild(promotionModal);
+            
+            const options = promotionModal.querySelectorAll('.promotion-option');
+            options.forEach(option => {
+                option.addEventListener('click', () => {
+                    const piece = option.getAttribute('data-piece');
+                    document.body.removeChild(promotionModal);
+                    document.body.removeChild(overlay);
+                    resolve(piece);
+                });
+            });
+        });
     }
     
     // Check if the current player's king is in check
@@ -586,7 +630,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             let status = `${currentPlayer.charAt(0).toUpperCase() + currentPlayer.slice(1)}'s turn`;
             if (inCheck) {
-                status += " - CHECK!";
+                status += " - You're in check!";
                 statusDisplay.className = 'check-warning';
             } else {
                 statusDisplay.className = '';
